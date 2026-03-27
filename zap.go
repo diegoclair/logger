@@ -76,7 +76,7 @@ func (cw *colorWriter) Write(p []byte) (n int, err error) {
 }
 
 func (l *loggerImpl) log(ctx context.Context, level zapcore.Level, msg string, fields ...Field) {
-	ctxFields := AttrsFromContext(ctx)
+	ctxFields := attrsFromContext(ctx)
 	extractedFields := l.params.ContextExtractor(ctx)
 	defaultFields := l.formatter.getDefaultFields()
 

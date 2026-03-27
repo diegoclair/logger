@@ -45,15 +45,14 @@ type attrsKey struct{}
 // All logs using the returned context will include these fields.
 // Fields accumulate: calling WithAttrs multiple times appends, never overwrites.
 func WithAttrs(ctx context.Context, fields ...Field) context.Context {
-	existing := AttrsFromContext(ctx)
+	existing := attrsFromContext(ctx)
 	merged := make([]Field, len(existing), len(existing)+len(fields))
 	copy(merged, existing)
 	merged = append(merged, fields...)
 	return context.WithValue(ctx, attrsKey{}, merged)
 }
 
-// AttrsFromContext returns the fields stored in the context via WithAttrs.
-func AttrsFromContext(ctx context.Context) []Field {
+func attrsFromContext(ctx context.Context) []Field {
 	fields, _ := ctx.Value(attrsKey{}).([]Field)
 	return fields
 }
