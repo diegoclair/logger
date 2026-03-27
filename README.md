@@ -22,20 +22,28 @@
 
 ### Why
 
-Most Go logging libraries force you to choose between three variants for each level — plain, formatted, and structured:
+Go structured loggers typically hit you with one or both of these problems:
+
+**Method proliferation** — libraries like zap (SugaredLogger) and logrus expose multiple variants per level:
 
 ```go
-// ❌ Three methods per level = 18 methods to remember
-log.Info(ctx, "starting")
-log.Infof(ctx, "user %s logged in", email)
-log.Infow(ctx, "request", logger.String("method", "GET"), logger.Int("status", 200))
+// zap SugaredLogger: Info, Infof, Infow, Infoln × 7 levels = 28 methods
+sugar.Info("starting")
+sugar.Infof("user %s logged in", email)
+sugar.Infow("request", "method", "GET", "status", 200)
 ```
 
-On top of that, adding fields requires calling typed constructors (`String`, `Int`, `Float64`, `Bool`, ...) — 15+ functions to memorize.
+**Typed field constructors** — zap, slog, and zerolog require type-specific functions to build fields:
+
+```go
+// 15–20 constructors to learn: String, Int, Int64, Float64, Bool, Time, Duration, ...
+zap.String("method", "GET"), zap.Int("status", 200), zap.Bool("cached", true)
+slog.String("method", "GET"), slog.Int("status", 200), slog.Bool("cached", true)
+```
 
 ### How
 
-With `logger`, every level has a single method with variadic fields. A single `Attr` constructor handles all types via a type switch, with zero allocations for primitives:
+With `logger`, every level has a single method with variadic fields. A single `Attr` constructor handles all types via a type switch, dispatching to the same typed zap encoders under the hood:
 
 ```go
 // ✅ One method per level, one field constructor
@@ -163,7 +171,7 @@ logger
 
 ### `Attr()` Type Dispatch
 
-`Attr` uses a type switch to select the most efficient zap encoder for each type. No reflection for primitives, zero allocations:
+`Attr` uses a type switch to select the most efficient zap encoder for each type. No reflection for primitives:
 
 | Go Type | Zap Encoder |
 |---------|-------------|
@@ -183,8 +191,8 @@ logger
 ### Why one `Attr()` instead of typed constructors?
 
 - **Simpler API**: 2 exported functions (`Attr` + `Err`) instead of 15
-- **Same performance for primitives**: the type switch dispatches to the exact same typed zap constructors (`zap.String`, `zap.Int`, etc.) — zero allocations
-- **Negligible overhead**: the type switch costs ~1-2ns per field; a full log write costs hundreds to thousands of ns
+- **Same encoders under the hood**: the type switch dispatches to the exact same typed zap constructors (`zap.String`, `zap.Int`, etc.)
+- **Negligible overhead**: the `any` boxing + type switch costs a few nanoseconds per field; a full log write costs hundreds to thousands of ns
 
 ### Why context-based attributes instead of `logger.With()`?
 
