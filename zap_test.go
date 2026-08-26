@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,8 +18,11 @@ import (
 
 var ansiRegexZap = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
-// newTestLogger creates a loggerImpl that writes to a buffer for test output capture.
 func newTestLogger(buf *bytes.Buffer, params Params) *loggerImpl {
+	return newTestLoggerSplit(buf, buf, params)
+}
+
+func newTestLoggerSplit(stdout, stderr io.Writer, params Params) *loggerImpl {
 	if params.ContextExtractor == nil {
 		params.ContextExtractor = func(ctx context.Context) []Field {
 			return nil
@@ -23,35 +30,24 @@ func newTestLogger(buf *bytes.Buffer, params Params) *loggerImpl {
 	}
 
 	formatter := newCustomJSONFormatter(params)
-
-	encoderConfig := zapcore.EncoderConfig{
-		TimeKey:        "time",
-		LevelKey:       "level",
-		NameKey:        "logger",
-		CallerKey:      "file",
-		MessageKey:     "msg",
-		StacktraceKey:  zapcore.OmitKey,
-		LineEnding:     zapcore.DefaultLineEnding,
-		EncodeLevel:    formatter.formatLevel,
-		EncodeTime:     zapcore.ISO8601TimeEncoder,
-		EncodeDuration: zapcore.SecondsDurationEncoder,
-		EncodeCaller:   zapcore.ShortCallerEncoder,
-		EncodeName:     zapcore.FullNameEncoder,
-	}
-
-	core := zapcore.NewCore(
-		zapcore.NewJSONEncoder(encoderConfig),
-		zapcore.AddSync(&colorWriter{w: buf, formatter: formatter}),
-		zap.DebugLevel, // enable all levels for testing
-	)
-
-	logger := zap.New(core, zap.AddCaller(), zap.AddCallerSkip(2))
+	logger := zap.New(newCore(formatter, zap.DebugLevel, stdout, stderr), zap.AddCaller(), zap.AddCallerSkip(2))
 
 	return &loggerImpl{
 		params:    params,
 		logger:    logger,
 		formatter: formatter,
 	}
+}
+
+func parseLogEntry(t *testing.T, output string) map[string]any {
+	t.Helper()
+
+	cleaned := ansiRegexZap.ReplaceAllString(strings.TrimSpace(output), "")
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(cleaned), &entry); err != nil {
+		t.Fatalf("output is not valid JSON: %v, output: %q", err, output)
+	}
+	return entry
 }
 
 func TestLoggerInfoProducesOutput(t *testing.T) {
@@ -128,12 +124,152 @@ func TestLoggerCriticalProducesOutput(t *testing.T) {
 	ctx := context.Background()
 	l.Critical(ctx, "critical message")
 
-	output := buf.String()
-	if !strings.Contains(output, "critical message") {
-		t.Errorf("expected output to contain 'critical message', got %q", output)
+	entry := parseLogEntry(t, buf.String())
+	if !strings.Contains(entry["msg"].(string), "critical message") {
+		t.Errorf("expected msg to contain 'critical message', got %v", entry["msg"])
 	}
-	if !strings.Contains(output, "CRITICAL") {
-		t.Errorf("expected output to contain 'CRITICAL', got %q", output)
+	if entry["level"] != "ERROR" {
+		t.Errorf("expected level 'ERROR', got %v", entry["level"])
+	}
+	if entry[fieldCritical] != true {
+		t.Errorf("expected %s=true, got %v", fieldCritical, entry[fieldCritical])
+	}
+}
+
+func TestLogMapsFatalLevelToErrorWithMarker(t *testing.T) {
+	var buf bytes.Buffer
+	l := newTestLogger(&buf, Params{AppName: "test-app"})
+
+	l.log(context.Background(), zapcore.FatalLevel, "fatal message")
+
+	entry := parseLogEntry(t, buf.String())
+	if !strings.Contains(entry["msg"].(string), "fatal message") {
+		t.Errorf("expected msg to contain 'fatal message', got %v", entry["msg"])
+	}
+	if entry["level"] != "ERROR" {
+		t.Errorf("expected level 'ERROR', got %v", entry["level"])
+	}
+	if entry[fieldFatal] != true {
+		t.Errorf("expected %s=true, got %v", fieldFatal, entry[fieldFatal])
+	}
+}
+
+func TestStandardLevelsCarryNoCrashMarker(t *testing.T) {
+	tests := []struct {
+		name  string
+		level zapcore.Level
+	}{
+		{"debug", zapcore.DebugLevel},
+		{"info", zapcore.InfoLevel},
+		{"warn", zapcore.WarnLevel},
+		{"error", zapcore.ErrorLevel},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := newTestLogger(&buf, Params{AppName: "test-app"})
+
+			l.log(context.Background(), tt.level, "message")
+
+			entry := parseLogEntry(t, buf.String())
+			if entry["level"] != tt.level.CapitalString() {
+				t.Errorf("expected level %q, got %v", tt.level.CapitalString(), entry["level"])
+			}
+			if _, exists := entry[fieldFatal]; exists {
+				t.Errorf("expected no %s field, got %v", fieldFatal, entry[fieldFatal])
+			}
+			if _, exists := entry[fieldCritical]; exists {
+				t.Errorf("expected no %s field, got %v", fieldCritical, entry[fieldCritical])
+			}
+		})
+	}
+}
+
+func TestCoreRoutesLevelsBetweenStreams(t *testing.T) {
+	tests := []struct {
+		name     string
+		logFunc  func(l *loggerImpl, ctx context.Context)
+		toStderr bool
+	}{
+		{"debug", func(l *loggerImpl, ctx context.Context) { l.Debug(ctx, "routed") }, false},
+		{"info", func(l *loggerImpl, ctx context.Context) { l.Info(ctx, "routed") }, false},
+		{"warn", func(l *loggerImpl, ctx context.Context) { l.Warn(ctx, "routed") }, true},
+		{"error", func(l *loggerImpl, ctx context.Context) { l.Error(ctx, "routed") }, true},
+		{"critical", func(l *loggerImpl, ctx context.Context) { l.Critical(ctx, "routed") }, true},
+		{"fatal", func(l *loggerImpl, ctx context.Context) {
+			l.log(ctx, zapcore.FatalLevel, "routed")
+		}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			l := newTestLoggerSplit(&stdout, &stderr, Params{AppName: "test-app", DebugLevel: true})
+
+			tt.logFunc(l, context.Background())
+
+			wrote, silent := &stdout, &stderr
+			if tt.toStderr {
+				wrote, silent = &stderr, &stdout
+			}
+			if !strings.Contains(wrote.String(), "routed") {
+				t.Errorf("expected the log line on the expected stream, got %q", wrote.String())
+			}
+			if silent.Len() != 0 {
+				t.Errorf("expected the other stream to stay empty, got %q", silent.String())
+			}
+		})
+	}
+}
+
+const fatalSubprocessEnv = "LOGGER_TEST_FATAL_SUBPROCESS"
+
+func TestFatalExitsWithStatusOne(t *testing.T) {
+	if os.Getenv(fatalSubprocessEnv) == "1" {
+		ctx := context.Background()
+		log := New(Params{AppName: "subprocess-app"})
+		log.Info(ctx, "info line")
+		log.Fatal(ctx, "fatal line")
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestFatalExitsWithStatusOne")
+	cmd.Env = append(os.Environ(), fatalSubprocessEnv+"=1")
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected the subprocess to fail, got %v (stderr: %q)", err, stderr.String())
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Errorf("expected exit code 1, got %d", exitErr.ExitCode())
+	}
+
+	outLines := ansiRegexZap.ReplaceAllString(stdout.String(), "")
+	errLines := ansiRegexZap.ReplaceAllString(stderr.String(), "")
+
+	if !strings.Contains(outLines, "info line") {
+		t.Errorf("expected the info line on stdout, got %q", outLines)
+	}
+	if strings.Contains(outLines, "fatal line") {
+		t.Errorf("expected no fatal line on stdout, got %q", outLines)
+	}
+	if !strings.Contains(errLines, "fatal line") {
+		t.Fatalf("expected the fatal line on stderr, got %q", errLines)
+	}
+
+	entry := parseLogEntry(t, errLines)
+	if entry["level"] != "ERROR" {
+		t.Errorf("expected level 'ERROR', got %v", entry["level"])
+	}
+	if entry[fieldFatal] != true {
+		t.Errorf("expected %s=true, got %v", fieldFatal, entry[fieldFatal])
 	}
 }
 

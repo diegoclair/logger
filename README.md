@@ -154,20 +154,43 @@ logger
 ├── Attr()      single field constructor — type switch dispatches to typed zap fields
 ├── Err()       error field constructor (key = "error")
 ├── WithAttrs() adds fields to context (immutable, accumulates)
-├── New()       creates a zap-backed logger with colored JSON output
+├── New()       creates a zap-backed logger with colored JSON output (stdout + stderr)
 └── NewNoop()   creates a no-op logger for tests
 ```
 
 ### Log Levels
 
-| Level | Method | Description |
-|-------|--------|-------------|
-| DEBUG | `Debug()` | Development diagnostics |
-| INFO | `Info()` | Normal operations |
-| WARN | `Warn()` | Unexpected but recoverable |
-| ERROR | `Error()` | Failures requiring attention |
-| FATAL | `Fatal()` | Unrecoverable, calls `os.Exit(1)` |
-| CRITICAL | `Critical()` | Custom level for alerts |
+| Method | Emitted `level` | Extra field | Stream | Description |
+|--------|-----------------|-------------|--------|-------------|
+| `Debug()` | `DEBUG` | — | stdout | Development diagnostics |
+| `Info()` | `INFO` | — | stdout | Normal operations |
+| `Warn()` | `WARN` | — | stderr | Unexpected but recoverable |
+| `Error()` | `ERROR` | — | stderr | Failures requiring attention |
+| `Critical()` | `ERROR` | `"critical": true` | stderr | Alerts |
+| `Fatal()` | `ERROR` | `"fatal": true` | stderr | Unrecoverable, calls `os.Exit(1)` |
+
+Only the four standard level strings ever reach the output. Log collectors
+(Railway, Grafana/Loki, CloudWatch) recognize those and nothing else — a custom
+`FATAL` or `CRITICAL` string is silently downgraded to INFO by most of them, so a
+crash would be displayed as a normal message. `Fatal` and `Critical` are therefore
+emitted as `ERROR` and identified by their own boolean field:
+
+```json
+{"time":"2026-01-01T00:00:00Z","level":"ERROR","msg":"cannot bind port","app":"my-service","fatal":true}
+```
+
+Filter them with `fatal:true` / `critical:true` in your log query.
+
+### Output Streams
+
+Warn and above are written to **stderr**, debug and info to **stdout**. Collectors
+that infer severity from the stream (`stdout` = info, `stderr` = error) get the
+right severity even when they do not parse the JSON payload.
+
+```bash
+./my-service 2>/dev/null   # only debug/info lines
+./my-service 1>/dev/null   # only warn/error/critical/fatal lines
+```
 
 ### `Attr()` Type Dispatch
 

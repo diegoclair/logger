@@ -13,6 +13,9 @@ import (
 const (
 	// LevelCritical is a custom level above Fatal.
 	LevelCritical = zapcore.Level(60)
+
+	fieldFatal    = "fatal"
+	fieldCritical = "critical"
 )
 
 type loggerImpl struct {
@@ -30,6 +33,23 @@ func newLogger(params Params) *loggerImpl {
 
 	formatter := newCustomJSONFormatter(params)
 
+	level := zap.InfoLevel
+	if params.DebugLevel {
+		level = zap.DebugLevel
+	}
+
+	logger := zap.New(newCore(formatter, level, os.Stdout, os.Stderr), zap.AddCaller(), zap.AddCallerSkip(2))
+
+	return &loggerImpl{
+		params:    params,
+		logger:    logger,
+		formatter: formatter,
+	}
+}
+
+// Warn and above go to stderr so collectors that infer severity from the
+// stream do not report a failure as a normal message.
+func newCore(formatter *customJSONFormatter, min zapcore.Level, stdout, stderr io.Writer) zapcore.Core {
 	encoderConfig := zapcore.EncoderConfig{
 		TimeKey:        "time",
 		LevelKey:       "level",
@@ -38,31 +58,32 @@ func newLogger(params Params) *loggerImpl {
 		MessageKey:     "msg",
 		StacktraceKey:  zapcore.OmitKey,
 		LineEnding:     zapcore.DefaultLineEnding,
-		EncodeLevel:    formatter.formatLevel,
+		EncodeLevel:    zapcore.CapitalLevelEncoder,
 		EncodeTime:     zapcore.ISO8601TimeEncoder,
 		EncodeDuration: zapcore.SecondsDurationEncoder,
 		EncodeCaller:   zapcore.ShortCallerEncoder,
 		EncodeName:     zapcore.FullNameEncoder,
 	}
 
-	level := zap.InfoLevel
-	if params.DebugLevel {
-		level = zap.DebugLevel
-	}
+	toStdout := zap.LevelEnablerFunc(func(l zapcore.Level) bool {
+		return l >= min && l < zapcore.WarnLevel
+	})
+	toStderr := zap.LevelEnablerFunc(func(l zapcore.Level) bool {
+		return l >= zapcore.WarnLevel
+	})
 
-	core := zapcore.NewCore(
-		zapcore.NewJSONEncoder(encoderConfig),
-		zapcore.AddSync(&colorWriter{w: os.Stdout, formatter: formatter}),
-		level,
+	return zapcore.NewTee(
+		zapcore.NewCore(
+			zapcore.NewJSONEncoder(encoderConfig),
+			zapcore.AddSync(&colorWriter{w: stdout, formatter: formatter}),
+			toStdout,
+		),
+		zapcore.NewCore(
+			zapcore.NewJSONEncoder(encoderConfig),
+			zapcore.AddSync(&colorWriter{w: stderr, formatter: formatter}),
+			toStderr,
+		),
 	)
-
-	logger := zap.New(core, zap.AddCaller(), zap.AddCallerSkip(2))
-
-	return &loggerImpl{
-		params:    params,
-		logger:    logger,
-		formatter: formatter,
-	}
 }
 
 type colorWriter struct {
@@ -75,12 +96,27 @@ func (cw *colorWriter) Write(p []byte) (n int, err error) {
 	return cw.w.Write([]byte(colored))
 }
 
+// Generic collectors only understand the standard levels, so the crash levels
+// travel as error plus a marker field.
+func normalizeLevel(level zapcore.Level) (zapcore.Level, zap.Field) {
+	switch level {
+	case zapcore.FatalLevel:
+		return zapcore.ErrorLevel, zap.Bool(fieldFatal, true)
+	case LevelCritical:
+		return zapcore.ErrorLevel, zap.Bool(fieldCritical, true)
+	default:
+		return level, zap.Skip()
+	}
+}
+
 func (l *loggerImpl) log(ctx context.Context, level zapcore.Level, msg string, fields ...Field) {
+	level, marker := normalizeLevel(level)
+
 	ctxFields := attrsFromContext(ctx)
 	extractedFields := l.params.ContextExtractor(ctx)
 	defaultFields := l.formatter.getDefaultFields()
 
-	allFields := make([]zap.Field, 0, len(fields)+len(ctxFields)+len(extractedFields)+len(defaultFields))
+	allFields := make([]zap.Field, 0, len(fields)+len(ctxFields)+len(extractedFields)+len(defaultFields)+1)
 
 	for _, f := range fields {
 		allFields = append(allFields, f.toZapField())
@@ -92,6 +128,7 @@ func (l *loggerImpl) log(ctx context.Context, level zapcore.Level, msg string, f
 		allFields = append(allFields, f.toZapField())
 	}
 	allFields = append(allFields, defaultFields...)
+	allFields = append(allFields, marker)
 
 	l.logger.Log(level, msg, allFields...)
 }

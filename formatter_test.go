@@ -5,8 +5,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"go.uber.org/zap/zapcore"
 )
 
 // stripANSI removes ANSI escape codes from a string so it can be parsed as JSON.
@@ -54,60 +52,6 @@ func TestNewCustomJSONFormatterIncludesHostname(t *testing.T) {
 	}
 	if !foundHost {
 		t.Error("expected default fields to contain 'host'")
-	}
-}
-
-func TestFormatLevelInfo(t *testing.T) {
-	f := newCustomJSONFormatter(Params{})
-	enc := &testArrayEncoder{}
-	f.formatLevel(zapcore.InfoLevel, enc)
-	if len(enc.values) != 1 || enc.values[0] != "INFO" {
-		t.Errorf("expected 'INFO', got %v", enc.values)
-	}
-}
-
-func TestFormatLevelDebug(t *testing.T) {
-	f := newCustomJSONFormatter(Params{})
-	enc := &testArrayEncoder{}
-	f.formatLevel(zapcore.DebugLevel, enc)
-	if len(enc.values) != 1 || enc.values[0] != "DEBUG" {
-		t.Errorf("expected 'DEBUG', got %v", enc.values)
-	}
-}
-
-func TestFormatLevelWarn(t *testing.T) {
-	f := newCustomJSONFormatter(Params{})
-	enc := &testArrayEncoder{}
-	f.formatLevel(zapcore.WarnLevel, enc)
-	if len(enc.values) != 1 || enc.values[0] != "WARN" {
-		t.Errorf("expected 'WARN', got %v", enc.values)
-	}
-}
-
-func TestFormatLevelError(t *testing.T) {
-	f := newCustomJSONFormatter(Params{})
-	enc := &testArrayEncoder{}
-	f.formatLevel(zapcore.ErrorLevel, enc)
-	if len(enc.values) != 1 || enc.values[0] != "ERROR" {
-		t.Errorf("expected 'ERROR', got %v", enc.values)
-	}
-}
-
-func TestFormatLevelFatal(t *testing.T) {
-	f := newCustomJSONFormatter(Params{})
-	enc := &testArrayEncoder{}
-	f.formatLevel(zapcore.FatalLevel, enc)
-	if len(enc.values) != 1 || enc.values[0] != "FATAL" {
-		t.Errorf("expected 'FATAL', got %v", enc.values)
-	}
-}
-
-func TestFormatLevelCritical(t *testing.T) {
-	f := newCustomJSONFormatter(Params{})
-	enc := &testArrayEncoder{}
-	f.formatLevel(LevelCritical, enc)
-	if len(enc.values) != 1 || enc.values[0] != "CRITICAL" {
-		t.Errorf("expected 'CRITICAL', got %v", enc.values)
 	}
 }
 
@@ -215,8 +159,6 @@ func TestApplyColorToLevel(t *testing.T) {
 		{"INFO", true},
 		{"WARN", true},
 		{"ERROR", true},
-		{"FATAL", true},
-		{"CRITICAL", true},
 		{"UNKNOWN", false}, // unknown level should remain unchanged
 	}
 
@@ -237,6 +179,21 @@ func TestApplyColorToLevel(t *testing.T) {
 				if resultLevel != tt.level {
 					t.Errorf("expected level %q to remain unchanged, got %q", tt.level, resultLevel)
 				}
+			}
+		})
+	}
+}
+
+func TestApplyColorToLevelCrashMarkers(t *testing.T) {
+	f := newCustomJSONFormatter(Params{})
+
+	for _, marker := range []string{fieldFatal, fieldCritical} {
+		t.Run(marker, func(t *testing.T) {
+			entry := map[string]any{"level": "ERROR", marker: true}
+			result := f.applyColorToLevel(entry)
+
+			if stripANSI(result["level"].(string)) != "ERROR" {
+				t.Errorf("expected level to stay 'ERROR', got %q", result["level"])
 			}
 		})
 	}
@@ -377,7 +334,7 @@ func TestWriteFieldSlice(t *testing.T) {
 }
 
 func TestLevelColorsMapComplete(t *testing.T) {
-	expectedLevels := []string{"DEBUG", "INFO", "WARN", "ERROR", "FATAL", "CRITICAL"}
+	expectedLevels := []string{"DEBUG", "INFO", "WARN", "ERROR"}
 	for _, level := range expectedLevels {
 		if _, exists := levelColors[level]; !exists {
 			t.Errorf("expected levelColors to contain %q", level)
@@ -440,27 +397,3 @@ func TestReorderFieldsWithOnlyCustomFields(t *testing.T) {
 		t.Errorf("expected custom2='val2', got %v", parsed["custom2"])
 	}
 }
-
-// testArrayEncoder is a simple mock for zapcore.PrimitiveArrayEncoder
-type testArrayEncoder struct {
-	values []string
-}
-
-func (e *testArrayEncoder) AppendBool(v bool)            {}
-func (e *testArrayEncoder) AppendByteString(v []byte)    {}
-func (e *testArrayEncoder) AppendComplex128(v complex128) {}
-func (e *testArrayEncoder) AppendComplex64(v complex64)  {}
-func (e *testArrayEncoder) AppendFloat64(v float64)      {}
-func (e *testArrayEncoder) AppendFloat32(v float32)      {}
-func (e *testArrayEncoder) AppendInt(v int)              {}
-func (e *testArrayEncoder) AppendInt64(v int64)          {}
-func (e *testArrayEncoder) AppendInt32(v int32)          {}
-func (e *testArrayEncoder) AppendInt16(v int16)          {}
-func (e *testArrayEncoder) AppendInt8(v int8)            {}
-func (e *testArrayEncoder) AppendString(v string)        { e.values = append(e.values, v) }
-func (e *testArrayEncoder) AppendUint(v uint)            {}
-func (e *testArrayEncoder) AppendUint64(v uint64)        {}
-func (e *testArrayEncoder) AppendUint32(v uint32)        {}
-func (e *testArrayEncoder) AppendUint16(v uint16)        {}
-func (e *testArrayEncoder) AppendUint8(v uint8)          {}
-func (e *testArrayEncoder) AppendUintptr(v uintptr)      {}

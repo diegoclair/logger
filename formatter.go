@@ -11,7 +11,6 @@ import (
 
 	"github.com/gookit/color"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 type customJSONFormatter struct {
@@ -33,21 +32,15 @@ func newCustomJSONFormatter(params Params) *customJSONFormatter {
 	return res
 }
 
-func (f *customJSONFormatter) formatLevel(l zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
-	levelStr := l.CapitalString()
-	if l == LevelCritical {
-		levelStr = "CRITICAL"
-	}
-	enc.AppendString(levelStr)
+var levelColors = map[string]func(...any) string{
+	"DEBUG": color.Magenta.Render,
+	"INFO":  color.Blue.Render,
+	"WARN":  color.Yellow.Render,
+	"ERROR": color.Red.Render,
 }
 
-var levelColors = map[string]func(...any) string{
-	"DEBUG":    color.Magenta.Render,
-	"INFO":     color.Blue.Render,
-	"WARN":     color.Yellow.Render,
-	"ERROR":    color.Red.Render,
-	"FATAL":    func(a ...any) string { return color.Bold.Render(color.Red.Render(a...)) },
-	"CRITICAL": func(a ...any) string { return color.Bold.Render(color.Red.Render(a...)) },
+func renderCrashLevel(a ...any) string {
+	return color.Bold.Render(color.Red.Render(a...))
 }
 
 func (f *customJSONFormatter) getRuntimeData() (funcName, filename string, line int) {
@@ -83,10 +76,18 @@ func (f *customJSONFormatter) Format(logEntry string) string {
 
 func (f *customJSONFormatter) applyColorToLevel(entry map[string]any) map[string]any {
 	level, ok := entry["level"].(string)
-	if ok {
-		if colorFunc, exists := levelColors[level]; exists {
-			entry["level"] = colorFunc(level)
-		}
+	if !ok {
+		return entry
+	}
+
+	// Crash entries stay visually distinct on a terminal while their level stays standard.
+	if entry[fieldFatal] == true || entry[fieldCritical] == true {
+		entry["level"] = renderCrashLevel(level)
+		return entry
+	}
+
+	if colorFunc, exists := levelColors[level]; exists {
+		entry["level"] = colorFunc(level)
 	}
 	return entry
 }
