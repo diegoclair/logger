@@ -1,12 +1,12 @@
 package logger
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/gookit/color"
@@ -103,69 +103,67 @@ func (f *customJSONFormatter) formatRuntimeDetails(entry map[string]any) map[str
 
 func (f *customJSONFormatter) reorderFields(entry map[string]any) string {
 	orderedFields := []string{"time", "level", "msg", "file", "app", "host"}
-	var result strings.Builder
+	line := newJSONLine(len(entry) * 10)
 
-	result.Grow(len(entry) * 10)
-
-	result.WriteString("{")
+	line.buf.WriteString("{")
 	firstField := true
 
 	for _, field := range orderedFields {
 		if value, exists := entry[field]; exists {
 			if !firstField {
-				result.WriteString(",")
+				line.buf.WriteString(",")
 			}
 			firstField = false
-			writeField(&result, field, value, true)
+			if field == "level" {
+				line.writeLevel(value)
+			} else {
+				line.writeField(field, value)
+			}
 			delete(entry, field)
 		}
 	}
 
 	for key, value := range entry {
 		if !firstField {
-			result.WriteString(",")
+			line.buf.WriteString(",")
 		}
 		firstField = false
-		writeField(&result, key, value, false)
+		line.writeField(key, value)
 	}
 
-	result.WriteString("}\n")
-	return result.String()
+	line.buf.WriteString("}\n")
+	return line.buf.String()
 }
 
-func writeField(b *strings.Builder, key string, value any, isKnownString bool) {
-	b.WriteString(`"`)
-	b.WriteString(key)
-	b.WriteString(`":`)
+type jsonLine struct {
+	buf     *bytes.Buffer
+	encoder *json.Encoder
+}
 
-	if isKnownString {
-		b.WriteString(`"`)
-		b.WriteString(fmt.Sprint(value))
-		b.WriteString(`"`)
-		return
-	}
+func newJSONLine(size int) jsonLine {
+	buf := bytes.NewBuffer(make([]byte, 0, size))
+	encoder := json.NewEncoder(buf)
+	encoder.SetEscapeHTML(false)
+	return jsonLine{buf: buf, encoder: encoder}
+}
 
-	switch v := value.(type) {
-	case string:
-		b.WriteString(`"`)
-		b.WriteString(v)
-		b.WriteString(`"`)
-	case int, int8, int16, int32, int64:
-		b.WriteString(strconv.FormatInt(v.(int64), 10))
-	case uint, uint8, uint16, uint32, uint64:
-		b.WriteString(strconv.FormatUint(v.(uint64), 10))
-	case float32, float64:
-		b.WriteString(strconv.FormatFloat(v.(float64), 'f', -1, 64))
-	case bool:
-		b.WriteString(strconv.FormatBool(v))
-	default:
-		jsonValue, err := json.Marshal(value)
-		if err != nil {
-			b.WriteString(`"`)
-			b.WriteString(fmt.Sprint(value))
-			b.WriteString(`"`)
-		} else {
-			b.Write(jsonValue)
-		}
+// The level is ours and may carry ANSI color codes, which a terminal must receive unescaped.
+func (l jsonLine) writeLevel(value any) {
+	l.buf.WriteString(`"level":"`)
+	fmt.Fprint(l.buf, value)
+	l.buf.WriteString(`"`)
+}
+
+func (l jsonLine) writeField(key string, value any) {
+	l.writeJSON(key)
+	l.buf.WriteString(":")
+	l.writeJSON(value)
+}
+
+// So a quote or a newline in a message never breaks the line.
+func (l jsonLine) writeJSON(value any) {
+	if err := l.encoder.Encode(value); err != nil {
+		_ = l.encoder.Encode(fmt.Sprint(value))
 	}
+	l.buf.Truncate(l.buf.Len() - 1)
 }

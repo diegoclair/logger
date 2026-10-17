@@ -264,55 +264,46 @@ func TestGetDefaultFieldsEmptyAppName(t *testing.T) {
 }
 
 func TestWriteFieldString(t *testing.T) {
-	var b strings.Builder
-	writeField(&b, "key", "value", false)
-	result := b.String()
-	if result != `"key":"value"` {
-		t.Errorf("expected '\"key\":\"value\"', got %q", result)
-	}
-}
-
-func TestWriteFieldKnownString(t *testing.T) {
-	var b strings.Builder
-	writeField(&b, "key", "value", true)
-	result := b.String()
+	line := newJSONLine(0)
+	line.writeField("key", "value")
+	result := line.buf.String()
 	if result != `"key":"value"` {
 		t.Errorf("expected '\"key\":\"value\"', got %q", result)
 	}
 }
 
 func TestWriteFieldFloat64(t *testing.T) {
-	var b strings.Builder
-	writeField(&b, "pi", float64(3.14), false)
-	result := b.String()
+	line := newJSONLine(0)
+	line.writeField("pi", float64(3.14))
+	result := line.buf.String()
 	if !strings.HasPrefix(result, `"pi":3.14`) {
 		t.Errorf("expected '\"pi\":3.14', got %q", result)
 	}
 }
 
 func TestWriteFieldBool(t *testing.T) {
-	var b strings.Builder
-	writeField(&b, "flag", true, false)
-	result := b.String()
+	line := newJSONLine(0)
+	line.writeField("flag", true)
+	result := line.buf.String()
 	if result != `"flag":true` {
 		t.Errorf("expected '\"flag\":true', got %q", result)
 	}
 }
 
 func TestWriteFieldBoolFalse(t *testing.T) {
-	var b strings.Builder
-	writeField(&b, "flag", false, false)
-	result := b.String()
+	line := newJSONLine(0)
+	line.writeField("flag", false)
+	result := line.buf.String()
 	if result != `"flag":false` {
 		t.Errorf("expected '\"flag\":false', got %q", result)
 	}
 }
 
 func TestWriteFieldComplexType(t *testing.T) {
-	var b strings.Builder
+	line := newJSONLine(0)
 	data := map[string]int{"a": 1, "b": 2}
-	writeField(&b, "data", data, false)
-	result := b.String()
+	line.writeField("data", data)
+	result := line.buf.String()
 	if !strings.HasPrefix(result, `"data":`) {
 		t.Errorf("expected result to start with '\"data\":', got %q", result)
 	}
@@ -325,11 +316,32 @@ func TestWriteFieldComplexType(t *testing.T) {
 }
 
 func TestWriteFieldSlice(t *testing.T) {
-	var b strings.Builder
-	writeField(&b, "items", []string{"a", "b", "c"}, false)
-	result := b.String()
+	line := newJSONLine(0)
+	line.writeField("items", []string{"a", "b", "c"})
+	result := line.buf.String()
 	if !strings.Contains(result, `"items":`) {
 		t.Errorf("expected result to contain '\"items\":', got %q", result)
+	}
+}
+
+func TestFormatEscapesEveryString(t *testing.T) {
+	f := newCustomJSONFormatter(Params{})
+	raw := `{"level":"WARN","msg":"vendor said \"no\"\nagain","error":"line1\nline2 \"q\" a\\b","we\"ird":"<tag>"}`
+
+	line := stripANSI(f.Format(raw))
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+		t.Fatalf("line is not valid JSON: %v\n%s", err, line)
+	}
+	if !strings.HasSuffix(parsed["msg"].(string), "vendor said \"no\"\nagain") {
+		t.Errorf("msg lost its content: %q", parsed["msg"])
+	}
+	if parsed["error"] != "line1\nline2 \"q\" a\\b" {
+		t.Errorf("error lost its content: %q", parsed["error"])
+	}
+	if parsed[`we"ird`] != "<tag>" {
+		t.Errorf("key or HTML-looking value was mangled: %v", parsed)
 	}
 }
 
