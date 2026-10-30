@@ -12,6 +12,10 @@ type Params struct {
 	// additional fields from context. Useful for extracting values stored by
 	// other libraries (e.g. trace_id from OpenTelemetry).
 	ContextExtractor func(ctx context.Context) []Field
+	// DowngradeError is optional and asked only by Error, with the line's first
+	// error field; a line with none is not asked about. True writes the line at
+	// info level instead, for failures the application does not count as its own.
+	DowngradeError func(ctx context.Context, err error) bool
 }
 
 // New creates a new Logger backed by zap.

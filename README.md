@@ -144,12 +144,27 @@ log := logger.New(logger.Params{
 })
 ```
 
+### 5. Keep a failure you do not count as yours out of the error level (optional)
+
+`DowngradeError` is asked by `Error` only, with the line's first error field, and true writes that line at info level:
+
+```go
+log := logger.New(logger.Params{
+    AppName: "my-service",
+    DowngradeError: func(ctx context.Context, err error) bool {
+        return errors.Is(err, errExpectedByThisService)
+    },
+})
+```
+
+The logger knows nothing about what the function decides. Left nil, `Error` compares one pointer and pays nothing else.
+
 ## Architecture
 
 ```
 logger
 ├── Logger      interface (Info, Debug, Warn, Error, Fatal, Critical, Print, Printf)
-├── Params      configuration (AppName, DebugLevel, ContextExtractor)
+├── Params      configuration (AppName, DebugLevel, ContextExtractor, DowngradeError)
 ├── Field       structured log field (created via Attr or Err)
 ├── Attr()      single field constructor — type switch dispatches to typed zap fields
 ├── Err()       error field constructor (key = "error")

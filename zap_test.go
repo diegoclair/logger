@@ -642,3 +642,119 @@ func TestLoggerOutputIsValidJSON(t *testing.T) {
 		t.Errorf("expected key='value', got %v", parsed["key"])
 	}
 }
+
+var errExpected = errors.New("expected failure")
+
+func TestDowngradeErrorMovesTheLineToInfoAndOutOfStderr(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	l := newTestLoggerSplit(&stdout, &stderr, Params{AppName: "test-app",
+		DowngradeError: func(context.Context, error) bool { return true }})
+
+	l.Error(context.Background(), "the line", Err(errExpected))
+
+	if stderr.Len() != 0 {
+		t.Errorf("a downgraded line reached stderr: %q", stderr.String())
+	}
+	entry := parseLogEntry(t, stdout.String())
+	if entry["level"] != "INFO" {
+		t.Errorf("expected INFO, got %v", entry["level"])
+	}
+	if entry["error"] != errExpected.Error() {
+		t.Errorf("the downgraded line lost its error: %v", entry["error"])
+	}
+}
+
+func TestDowngradeErrorAnsweringFalseKeepsTheLineAtError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	l := newTestLoggerSplit(&stdout, &stderr, Params{AppName: "test-app",
+		DowngradeError: func(context.Context, error) bool { return false }})
+
+	l.Error(context.Background(), "the line", Err(errExpected))
+
+	if stdout.Len() != 0 {
+		t.Errorf("an error line reached stdout: %q", stdout.String())
+	}
+	if entry := parseLogEntry(t, stderr.String()); entry["level"] != "ERROR" {
+		t.Errorf("expected ERROR, got %v", entry["level"])
+	}
+}
+
+func TestDowngradeErrorIsAskedWithTheLinesContextAndItsFirstError(t *testing.T) {
+	type key struct{}
+	var askedCtx context.Context
+	var askedErrs []error
+	l := newTestLogger(&bytes.Buffer{}, Params{AppName: "test-app",
+		DowngradeError: func(ctx context.Context, err error) bool {
+			askedCtx, askedErrs = ctx, append(askedErrs, err)
+			return false
+		}})
+
+	ctx := context.WithValue(context.Background(), key{}, "the line's")
+	l.Error(ctx, "the line", Attr("order", 1), Err(errExpected), Err(errors.New("a second one")))
+
+	if len(askedErrs) != 1 || !errors.Is(askedErrs[0], errExpected) {
+		t.Fatalf("expected one question about the first error, got %v", askedErrs)
+	}
+	if askedCtx != ctx {
+		t.Error("the question did not carry the line's context")
+	}
+}
+
+func TestDowngradeErrorIsNotAskedAboutALineWithNoError(t *testing.T) {
+	var buf bytes.Buffer
+	l := newTestLogger(&buf, Params{AppName: "test-app", DowngradeError: func(context.Context, error) bool {
+		t.Error("asked about a line that carries no error")
+		return true
+	}})
+
+	l.Error(context.Background(), "the line", Attr("order", 1), Err(nil))
+
+	if entry := parseLogEntry(t, buf.String()); entry["level"] != "ERROR" {
+		t.Errorf("expected ERROR, got %v", entry["level"])
+	}
+}
+
+func TestDowngradeErrorIsAskedByErrorAlone(t *testing.T) {
+	var buf bytes.Buffer
+	l := newTestLogger(&buf, Params{AppName: "test-app", DowngradeError: func(context.Context, error) bool {
+		t.Error("asked by a level other than Error")
+		return true
+	}})
+
+	ctx := context.Background()
+	l.Debug(ctx, "line", Err(errExpected))
+	l.Info(ctx, "line", Err(errExpected))
+	l.Warn(ctx, "line", Err(errExpected))
+	l.Critical(ctx, "line", Err(errExpected))
+}
+
+func TestADowngradedLineKeepsTheCallerAndTheContextFields(t *testing.T) {
+	var buf bytes.Buffer
+	l := newTestLogger(&buf, Params{AppName: "test-app",
+		ContextExtractor: func(context.Context) []Field { return []Field{Attr("extracted", "yes")} },
+		DowngradeError:   func(context.Context, error) bool { return true }})
+
+	l.Error(context.Background(), "the line", Err(errExpected))
+
+	entry := parseLogEntry(t, buf.String())
+	if file, _ := entry["file"].(string); !strings.Contains(file, "zap_test.go") {
+		t.Errorf("the line lost its caller: %v", entry["file"])
+	}
+	if entry["extracted"] != "yes" {
+		t.Errorf("the line lost its context fields: %v", entry)
+	}
+}
+
+func TestErrorLevelCostsNoAllocationWithOrWithoutTheFunction(t *testing.T) {
+	fields := []Field{Attr("order", 1), Err(errExpected)}
+	for name, params := range map[string]Params{
+		"without": {AppName: "test-app"},
+		"with":    {AppName: "test-app", DowngradeError: func(context.Context, error) bool { return false }},
+	} {
+		l := newTestLogger(&bytes.Buffer{}, params)
+		allocs := testing.AllocsPerRun(100, func() { l.resolveErrorLevel(context.Background(), fields) })
+		if allocs != 0 {
+			t.Errorf("%s the function: %v allocations", name, allocs)
+		}
+	}
+}

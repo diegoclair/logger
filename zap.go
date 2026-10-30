@@ -146,7 +146,24 @@ func (l *loggerImpl) Warn(ctx context.Context, msg string, fields ...Field) {
 }
 
 func (l *loggerImpl) Error(ctx context.Context, msg string, fields ...Field) {
-	l.log(ctx, zapcore.ErrorLevel, msg, fields...)
+	l.log(ctx, l.resolveErrorLevel(ctx, fields), msg, fields...)
+}
+
+func (l *loggerImpl) resolveErrorLevel(ctx context.Context, fields []Field) zapcore.Level {
+	if l.params.DowngradeError == nil {
+		return zapcore.ErrorLevel
+	}
+	for _, f := range fields {
+		err, isError := f.zf.Interface.(error)
+		if f.zf.Type != zapcore.ErrorType || !isError {
+			continue
+		}
+		if l.params.DowngradeError(ctx, err) {
+			return zapcore.InfoLevel
+		}
+		return zapcore.ErrorLevel
+	}
+	return zapcore.ErrorLevel
 }
 
 func (l *loggerImpl) Fatal(ctx context.Context, msg string, fields ...Field) {
